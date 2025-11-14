@@ -14,7 +14,7 @@ from db_utils import get_registered_users, connect_db
 
 
 class EnrollmentDialog(tk.Toplevel):
-    """Diálogo para ingresar nombre de usuario y realizar el registro."""
+    """Diálogo para ingresar los datos del usuario y realizar el registro."""
     
     def __init__(self, master, log_message_callback):
         super().__init__(master)
@@ -25,12 +25,21 @@ class EnrollmentDialog(tk.Toplevel):
         self.create_widgets()
         
     def create_widgets(self):
-        tk.Label(self, text="Paso 2: Ingrese el Nombre del Usuario a Registrar", font=("Helvetica", 10, "bold")).pack(pady=10, padx=20)
+        tk.Label(self, text="Paso 2: Ingrese los Datos del Usuario a Registrar", font=("Helvetica", 10, "bold")).pack(pady=10, padx=20)
         
-        # Campo de nombre
-        tk.Label(self, text="Nombre de Usuario:").pack(pady=2, padx=20, anchor="w")
-        self.username_entry = tk.Entry(self, width=40)
-        self.username_entry.pack(pady=5, padx=20)
+        # Crear un frame para los campos de entrada
+        form_frame = tk.Frame(self)
+        form_frame.pack(pady=5, padx=20)
+
+        # Campos del formulario
+        labels = ["Nombre:", "Apellido:", "RUT (con guion):", "Matrícula (Opcional):"]
+        self.entries = {}
+
+        for i, label_text in enumerate(labels):
+            tk.Label(form_frame, text=label_text).grid(row=i, column=0, sticky="w", pady=2)
+            entry = tk.Entry(form_frame, width=40)
+            entry.grid(row=i, column=1, pady=2)
+            self.entries[label_text] = entry
         
         # Botón para iniciar el registro
         tk.Button(self, text="Iniciar Registro de Huella", 
@@ -38,17 +47,21 @@ class EnrollmentDialog(tk.Toplevel):
                   bg="orange", fg="white").pack(pady=10)
 
     def start_enrollment_process(self):
-        username = self.username_entry.get().strip()
-        if not username:
-            messagebox.showerror("Error", "El nombre de usuario no puede estar vacío.")
+        nombre = self.entries["Nombre:"].get().strip()
+        apellido = self.entries["Apellido:"].get().strip()
+        rut = self.entries["RUT (con guion):"].get().strip()
+        matricula = self.entries["Matrícula (Opcional):"].get().strip()
+
+        if not nombre or not apellido or not rut:
+            messagebox.showerror("Error", "Nombre, Apellido y RUT son campos obligatorios.")
             return
 
         # Cerramos el diálogo antes de iniciar el proceso largo de captura
         self.destroy() 
         
         # Iniciamos el proceso de registro en un hilo
-        self.log_message(f"Iniciando registro para {username}...")
-        thread = threading.Thread(target=enroll_user, args=(username,))
+        self.log_message(f"Iniciando registro para {nombre} {apellido} (RUT: {rut})...")
+        thread = threading.Thread(target=enroll_user, args=(nombre, apellido, rut, matricula))
         thread.start()
 
 
@@ -59,77 +72,87 @@ class FingerprintApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("Sistema de Asistencia - Liceo Politécnico Ireneo Badilla Fuentes")
-        self.geometry("600x800")
-        self.resizable(False, False)
+        self.geometry("800x600")
+        # Permitir que la ventana sea redimensionable
+        self.resizable(True, True)
         self.logo_img = None 
         
         self.create_widgets()
 
     def create_widgets(self):
+        # Configurar el grid de la ventana principal para que el frame principal se expanda
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
         # Frame principal para contener todo
         main_frame = tk.Frame(self, padx=10, pady=10)
-        main_frame.pack(fill=tk.BOTH, expand=True)
+        main_frame.grid(row=0, column=0, sticky="nsew")
         
+        # Configurar el grid del main_frame para que se expanda
+        main_frame.grid_rowconfigure(2, weight=1) # El área de log se expandirá
+        main_frame.grid_columnconfigure(0, weight=1)
+
         # ----------------------------------
         # ENCABEZADO (Logo y Nombre)
         # ----------------------------------
         header_frame = tk.Frame(main_frame, bd=2, relief=tk.GROOVE)
-        header_frame.pack(fill=tk.X, pady=10)
+        header_frame.grid(row=0, column=0, sticky="ew", pady=10)
+        header_frame.columnconfigure(1, weight=1) # Para que el texto se centre
 
-        # Cargar Logo (Manejo de error simple si no se encuentra)
+        # Cargar Logo
         logo_path = "logo.png"
         if os.path.exists(logo_path):
             try:
                 self.logo_img = tk.PhotoImage(file=logo_path)
                 logo_label = tk.Label(header_frame, image=self.logo_img)
-                logo_label.pack(side=tk.LEFT, padx=10)
+                logo_label.grid(row=0, column=0, padx=10, pady=5)
             except Exception as e:
                 self.log_message(f"⚠️ Error al cargar el logo: {e}", is_error=True)
 
-        # Nombre de la Institución
         tk.Label(header_frame, 
                  text="Liceo Politécnico Ireneo Badilla Fuentes", 
-                 font=("Helvetica", 14, "bold")).pack(pady=10, padx=10)
+                 font=("Helvetica", 14, "bold")).grid(row=0, column=1, padx=10, pady=10)
 
         # ----------------------------------
         # Consola/Log de Mensajes
         # ----------------------------------
         log_label = tk.Label(main_frame, text="Log de Eventos:", anchor="w", font=("Helvetica", 10, "bold"))
-        log_label.pack(fill=tk.X, pady=(10, 0))
+        log_label.grid(row=1, column=0, sticky="w", pady=(10, 0))
         
         self.log_area = scrolledtext.ScrolledText(main_frame, height=12, state=tk.DISABLED, wrap=tk.WORD)
-        self.log_area.pack(fill=tk.X, pady=5)
+        self.log_area.grid(row=2, column=0, sticky="nsew", pady=5)
         
         # Redirigir la salida estándar (print) a la caja de texto
         sys.stdout.write = lambda text: self.log_message(text)
         sys.stderr.write = lambda text: self.log_message(text, is_error=True)
         
         # ----------------------------------
-        # MENÚ PRINCIPAL (Dos Opciones)
+        # MENÚ PRINCIPAL
         # ----------------------------------
         menu_frame = tk.LabelFrame(main_frame, text="Opciones Principales", padx=10, pady=10)
-        menu_frame.pack(fill=tk.X, pady=10)
+        menu_frame.grid(row=3, column=0, sticky="ew", pady=10)
+        menu_frame.columnconfigure(0, weight=1) # Para que los botones se expandan
         
-        # Opción 1: Marcación / Identificación
         scan_btn = tk.Button(menu_frame, text="1. MARCAR ASISTENCIA", 
                              command=self.start_identification_thread, 
                              bg="#4CAF50", fg="white", font=("Helvetica", 16, "bold"))
-        scan_btn.pack(fill=tk.X, pady=10)
+        scan_btn.grid(row=0, column=0, sticky="ew", pady=5)
 
-        # Opción 2: Enrolar (Protegido por Contraseña)
         enroll_btn = tk.Button(menu_frame, text="2. ENROLAR NUEVO USUARIO (ADMIN)", 
                                command=self.open_password_check, 
                                bg="#FF9800", fg="white", font=("Helvetica", 16, "bold"))
-        enroll_btn.pack(fill=tk.X, pady=10)
+        enroll_btn.grid(row=1, column=0, sticky="ew", pady=5)
 
         # ----------------------------------
         # Botones de Utilidad
         # ----------------------------------
         util_frame = tk.Frame(main_frame)
-        util_frame.pack(fill=tk.X, pady=10)
-        
-        tk.Button(util_frame, text="Mostrar Usuarios Registrados", command=self.show_registered_users).pack(side=tk.LEFT, padx=5)
-        tk.Button(util_frame, text="Salir", command=self.quit_app, bg="red", fg="white").pack(side=tk.RIGHT, padx=5)
+        util_frame.grid(row=4, column=0, sticky="ew", pady=10)
+        util_frame.columnconfigure(0, weight=1) # Para que el botón de la izquierda se expanda un poco
+        util_frame.columnconfigure(1, weight=1) # Para que el botón de la derecha se expanda un poco
+
+        tk.Button(util_frame, text="Mostrar Usuarios Registrados", command=self.show_registered_users).grid(row=0, column=0, sticky="w", padx=5)
+        tk.Button(util_frame, text="Salir", command=self.quit_app, bg="red", fg="white").grid(row=0, column=1, sticky="e", padx=5)
 
     def log_message(self, message, is_error=False):
         """Muestra un mensaje en el área de log."""
