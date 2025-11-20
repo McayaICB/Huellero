@@ -1,36 +1,52 @@
 # report_utils.py
 import smtplib
 import os
+import configparser
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.mime.base import MIMEBase
 from email import encoders
 
 # --- CONFIGURACIÓN DE CORREO (PARA MICROSOFT/OUTLOOK) ---
-# Las credenciales se leen de forma segura desde variables de entorno.
-# ANTES de ejecutar la app, configura estas variables en tu terminal:
-#
-# En Linux/macOS:
-# export EMAIL_USER="tu_correo@outlook.com"
-# export EMAIL_PASS="tu_contraseña_de_aplicacion_de_16_letras"
-#
-# En Windows (CMD):
-# set EMAIL_USER="tu_correo@outlook.com"
-# set EMAIL_PASS="tucontraseñadeaplicacion"
+# Las credenciales se leen desde el archivo config.ini en la sección [Email]
 
-SENDER_EMAIL = os.getenv("EMAIL_USER")
-SENDER_PASSWORD = os.getenv("EMAIL_PASS")
 SMTP_SERVER = "smtp.office365.com"  # Servidor SMTP para Microsoft 365/Outlook
 SMTP_PORT = 587                     # Puerto para STARTTLS
+
+def _get_email_config():
+    """
+    Lee la configuración de email desde config.ini.
+    Retorna (sender_email, sender_password) o (None, None) si no están configurados.
+    """
+    config = configparser.ConfigParser()
+    try:
+        config.read('config.ini')
+        sender_email = config.get('Email', 'sender_email', fallback='').strip()
+        sender_password = config.get('Email', 'sender_password', fallback='').strip()
+        
+        if sender_email and sender_password:
+            return sender_email, sender_password
+        else:
+            return None, None
+    except Exception as e:
+        print(f"Error al leer configuración de email: {e}")
+        return None, None
 
 def send_report_by_email(recipient_email, subject, body, attachment_path):
     """
     Envía un correo electrónico con un archivo adjunto usando una cuenta de Microsoft.
+    Las credenciales se leen desde config.ini.
     """
+    SENDER_EMAIL, SENDER_PASSWORD = _get_email_config()
+    
     if not SENDER_EMAIL or not SENDER_PASSWORD:
-        msg = "Error: Las variables de entorno EMAIL_USER y EMAIL_PASS no están configuradas."
+        msg = "Error: Las credenciales de email no están configuradas en config.ini. Por favor, configure el correo remitente y contraseña en el panel de administración."
         print(msg)
         return False, msg
+    
+    # Establecer variables de entorno para compatibilidad (si es necesario)
+    os.environ["EMAIL_USER"] = SENDER_EMAIL
+    os.environ["EMAIL_PASS"] = SENDER_PASSWORD
 
     try:
         msg = MIMEMultipart()

@@ -187,20 +187,32 @@ def save_clocking(rut):
                 estado = 'presente'
             else:
                 estado = 'tardanza'
-                # Incrementar el contador de atrasos solo si es una tardanza
-                num_atrasos += 1
-                cursor.execute("UPDATE ALUMNOS SET num_atrasos = ? WHERE id_alumno = ?", (num_atrasos, user_id))
+                # Solo incrementar si es una tardanza Y si la marcación es la primera del día
                 
-            # 3. Insertar la marcación (solo hora_entrada)
+            # 3. Intentar Insertar la marcación (solo hora_entrada)
+            # USAMOS 'ON CONFLICT DO NOTHING'
             cursor.execute("""
                 INSERT INTO ASISTENCIAS (id_alumno, fecha, hora_entrada, estado) 
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT(id_alumno, fecha) DO NOTHING 
             """, (user_id, current_date, current_time, estado))
             
-            conn.commit()
-            # Devuelve el estado, la hora y el número de atrasos actualizado
-            return estado, current_time, num_atrasos
+            # 4. Verificar si la inserción ocurrió (solo si no hubo conflicto)
+            if cursor.rowcount > 0:
+                # Si se insertó una nueva fila y el estado es 'tardanza', actualizamos el contador.
+                if estado == 'tardanza':
+                    num_atrasos += 1
+                    cursor.execute("UPDATE ALUMNOS SET num_atrasos = ? WHERE id_alumno = ?", (num_atrasos, user_id))
+                
+                conn.commit()
+                # Devuelve el estado, la hora y el número de atrasos actualizado
+                return f"entrada ({estado})", current_time, num_atrasos
+            else:
+                # Si hubo conflicto, significa que el alumno ya marcó hoy.
+                # No se hace nada y se notifica.
+                # Para devolver el estado, necesitamos consultarlo. 
+                # Simplificamos devolviendo "ya registrado"
+                return "ya registrado", None, num_atrasos
 
         # Si no hay usuario encontrado
         return None, None, None
