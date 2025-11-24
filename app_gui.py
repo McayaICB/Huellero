@@ -1,4 +1,4 @@
-# app_gui.py (VERSIÓN FINAL Y COMPLETA)
+
 import tkinter as tk
 from tkinter import messagebox
 from tkinter import scrolledtext
@@ -34,9 +34,9 @@ except ImportError:
 # Importar funciones de los otros módulos
 from enroll_test import enroll_user 
 from identify import identify_user_automatically
-from db_utils import get_all_alumnos_details, connect_db, get_clockings_for_month, reset_monthly_delays
+from db_utils import get_all_alumnos_details, connect_db, get_clockings_for_month, reset_all_delays, get_alumno_details_by_rut, update_alumno_details, promote_students
 from validation_utils import is_valid_rut
-from report_utils import send_report_by_email # <-- Usamos la nueva función
+from report_utils import send_report_by_email 
 import gi
 
 try:
@@ -73,8 +73,66 @@ class BaseFrame(tk.Frame):
                 return
 
 # ----------------------------------------------------
+# HELPER CLASS: ScrolledFrame
+# ----------------------------------------------------
+class ScrolledFrame(tk.Frame):
+    def __init__(self, parent, *args, **kw):
+        tk.Frame.__init__(self, parent, *args, **kw)
+
+        vscrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL)
+        vscrollbar.pack(fill=tk.Y, side=tk.RIGHT, expand=tk.FALSE)
+        
+        canvas = tk.Canvas(self, bd=0, highlightthickness=0, yscrollcommand=vscrollbar.set)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=tk.TRUE)
+        vscrollbar.config(command=canvas.yview)
+
+        self.interior = interior = tk.Frame(canvas)
+        interior_id = canvas.create_window(0, 0, window=interior, anchor=tk.NW)
+
+        def _configure_interior(event):
+            # Update the scrollbars to match the size of the inner frame
+            size = (interior.winfo_reqwidth(), interior.winfo_reqheight())
+            canvas.config(scrollregion="0 0 %s %s" % size)
+            if interior.winfo_reqwidth() != canvas.winfo_width():
+                # Update the canvas's width to fit the inner frame
+                canvas.config(width=interior.winfo_reqwidth())
+        interior.bind('<Configure>', _configure_interior)
+
+        def _configure_canvas(event):
+            if interior.winfo_width() != canvas.winfo_width():
+                # Update the inner frame's width to fill the canvas
+                canvas.itemconfigure(interior_id, width=canvas.winfo_width())
+        canvas.bind('<Configure>', _configure_canvas)
+
+        # Bind mouse wheel for scrolling
+        def _on_mousewheel(event):
+            # For Linux
+            if event.num == 4:
+                canvas.yview_scroll(-1, "units")
+            elif event.num == 5:
+                canvas.yview_scroll(1, "units")
+            # For Windows
+            else:
+                canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+
+        def _bind_mouse(event=None):
+            canvas.bind_all("<MouseWheel>", _on_mousewheel)
+            canvas.bind_all("<Button-4>", _on_mousewheel)
+            canvas.bind_all("<Button-5>", _on_mousewheel)
+
+        def _unbind_mouse(event=None):
+            canvas.unbind_all("<MouseWheel>")
+            canvas.unbind_all("<Button-4>")
+            canvas.unbind_all("<Button-5>")
+
+        canvas.bind('<Enter>', _bind_mouse)
+        canvas.bind('<Leave>', _unbind_mouse)
+
+
+# ----------------------------------------------------
 # 1. CLASE PRINCIPAL DE LA APLICACIÓN (App)
 # ----------------------------------------------------
+
 class FingerprintApp(tk.Tk): 
 
     def __init__(self):
@@ -99,7 +157,6 @@ class FingerprintApp(tk.Tk):
             # Entornos donde -fullscreen no está soportado seguirán con la ventana maximizada
             self._is_fullscreen = False        
         self.bind('<Escape>', lambda e: self.quit_app())
-        self.resizable(True, True) 
         # -----------------------------------------------------
         
         self.logo_img = None
@@ -119,13 +176,13 @@ class FingerprintApp(tk.Tk):
         container.grid_columnconfigure(0, weight=1)
 
         self.frames = {}
-        for F in (MainMenuFrame, NumericPadFrame, EnrollmentFrame, PasswordCheckFrame, AdminFrame):
+        for F in (MainMenuFrame, NumericPadFrame, EnrollmentFrame, PasswordCheckFrame, AdminFrame, EnrollmentStatusFrame, VerificationStatusFrame, ModifyStudentFrame):
             frame = F(container, self)
             self.frames[F] = frame
             frame.grid(row=0, column=0, sticky="nsew")
 
         self.log_messages_widget = self._create_log_widget()
-        self._check_and_reset_delays() # Comprobar y resetear atrasos al iniciar
+        self._check_and_reset_annual_delays() # Comprobar y resetear atrasos al iniciar el AÑO
         self.show_frame(MainMenuFrame)
     
     def _load_admin_password(self):
@@ -147,30 +204,40 @@ class FingerprintApp(tk.Tk):
 
         return password
 
-    def _check_and_reset_delays(self):
-        """Verifica si es un nuevo mes y resetea los contadores de atrasos si es necesario."""
-        last_reset_file = ".last_reset_month"
-        current_month = str(datetime.now().month)
+    def _check_and_reset_annual_delays(self):
+        """Verifica si es un nuevo AÑO y resetea los contadores de atrasos si es necesario."""
+        last_reset_file = ".last_reset_year"
+        current_year = str(datetime.now().year)
         
         try:
             with open(last_reset_file, 'r') as f:
-                last_reset_month = f.read().strip()
+                last_reset_year = f.read().strip()
         except FileNotFoundError:
-            last_reset_month = ""
+            last_reset_year = ""
 
-        if current_month != last_reset_month:
-            self.log_message("Detectado nuevo mes. Reseteando contadores de atrasos...")
-            if reset_monthly_delays():
-                self.log_message("Contadores de atrasos reseteados a 0.")
-                try:
-                    with open(last_reset_file, 'w') as f:
-                        f.write(current_month)
-                except Exception as e:
-                    self.log_message(f"No se pudo guardar el mes de reseteo: {e}")
+        if current_year != last_reset_year:
+            self.log_message("Detectado nuevo año. Reseteando contadores de atrasos y promoviendo cursos...")
+            
+            # 1. Resetear atrasos
+            if reset_all_delays(): 
+                self.log_message("Contadores de atrasos reseteados a 0 para el nuevo año.")
             else:
                 self.log_message("Error al resetear los contadores de atrasos.")
+                
+            # 2. Promover estudiantes
+            success, promoted, graduated = promote_students()
+            if success:
+                self.log_message(f"Promoción anual completada. Promovidos: {promoted}, Egresados: {graduated}.")
+            else:
+                self.log_message("Error durante la promoción anual de estudiantes.")
+
+            try:
+                with open(last_reset_file, 'w') as f:
+                    f.write(current_year)
+            except Exception as e:
+                self.log_message(f"No se pudo guardar el año de reseteo: {e}")
         else:
-            self.log_message("El contador de atrasos ya está actualizado para este mes.")
+            self.log_message("El contador de atrasos ya está actualizado para este año.")
 
     def _toggle_fullscreen(self, event=None):
         """Alterna el estado de pantalla completa (F11)."""
@@ -205,9 +272,11 @@ class FingerprintApp(tk.Tk):
         log_widget.config(state='disabled')
         return log_widget
 
-    def show_frame(self, cont):
-        """Muestra el frame solicitado."""
+    def show_frame(self, cont, **kwargs):
+        """Muestra el frame solicitado y le pasa argumentos opcionales."""
         frame = self.frames[cont]
+        if hasattr(frame, 'on_show'):
+            frame.on_show(**kwargs)
         frame.tkraise()
 
     def log_message(self, message):
@@ -556,8 +625,11 @@ class PasswordCheckFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
 
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
         main_frame = tk.Frame(self, padx=50, pady=50)
-        main_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        main_frame.grid(row=0, column=0, sticky="")
 
         tk.Label(main_frame, text="ACCESO RESTRINGIDO", font=("Helvetica", 18, "bold")).pack(pady=20)
         tk.Label(main_frame, text="Ingrese la contraseña de administrador:", font=("Helvetica", 14)).pack(pady=10)
@@ -592,7 +664,7 @@ class PasswordCheckFrame(BaseFrame):
             # limpiar la intención una vez ejecutada
             self.controller.next_destination = None
         else:
-            self.controller.log_message("❌ Contraseña incorrecta. Acceso denegado.")
+            self.controller.log_message("Contraseña incorrecta. Acceso denegado.")
             messagebox.showerror("Error de Acceso", "Contraseña incorrecta. Intente de nuevo.")
          
         self.pass_entry.delete(0, tk.END)
@@ -610,9 +682,12 @@ class EnrollmentFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
 
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
         # Frame principal que contendrá el formulario
         main_content_frame = tk.Frame(self)
-        main_content_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        main_content_frame.grid(row=0, column=0, sticky="")
 
         tk.Label(main_content_frame, text="REGISTRO DE NUEVO ALUMNO", font=("Helvetica", 18, "bold")).pack(pady=20)
         
@@ -631,7 +706,19 @@ class EnrollmentFrame(BaseFrame):
         self.hora_max_tardanza_entry = tk.Entry(form_frame, width=30, font=("Helvetica", 12))
         self.hora_max_tardanza_entry.grid(row=5, column=1, padx=10, pady=10, sticky="e")
         self.hora_max_tardanza_entry.insert(0, "08:15") # Valor por defecto
-        
+
+        # >>> NUEVO CAMPO: Umbral de Advertencia de Atrasos
+        tk.Label(form_frame, text="Umbral Advertencia Atrasos (Ej: 10):", font=("Helvetica", 12)).grid(row=6, column=0, padx=10, pady=10, sticky="w")
+        self.max_atrasos_warning_entry = tk.Entry(form_frame, width=30, font=("Helvetica", 12))
+        self.max_atrasos_warning_entry.grid(row=6, column=1, padx=10, pady=10, sticky="e")
+        self.max_atrasos_warning_entry.insert(0, "10")  # Valor por defecto
+
+        # >>> NUEVO CAMPO: Curso
+        tk.Label(form_frame, text="Curso (*):", font=("Helvetica", 12)).grid(row=7, column=0, padx=10, pady=10, sticky="w")
+        self.curso_combobox = ttk.Combobox(form_frame, values=["1ro Medio", "2do Medio", "3ro Medio", "4to Medio"], state="readonly", font=("Helvetica", 12), width=28)
+        self.curso_combobox.grid(row=7, column=1, padx=10, pady=10, sticky="e")
+        self.curso_combobox.current(0) # Default 1ro Medio
+
         form_frame.grid_columnconfigure(1, weight=1)
         
         # Botones de Acción
@@ -650,6 +737,12 @@ class EnrollmentFrame(BaseFrame):
         
         # Lista de botones para bloquear/desbloquear
         self.all_buttons = [self.enroll_button, self.cancel_button]
+
+    def on_show(self, **kwargs):
+        """Se ejecuta cada vez que se muestra el frame."""
+        self._unlock_all_buttons()
+        self._clear_fields()
+        self.controller.log_message("Pantalla de enrolamiento lista.")
                   
     def _create_entry_field(self, parent, label_text, row):
         """Función helper para crear campos de entrada."""
@@ -676,16 +769,29 @@ class EnrollmentFrame(BaseFrame):
         a_m = self.apellido_materno_entry.get().strip()
         rut = self.rut_entry.get().strip()
         hora_max = self.hora_max_tardanza_entry.get().strip()
+        max_warn = self.max_atrasos_warning_entry.get().strip()
+        curso = self.curso_combobox.get().strip()
 
         # 2. Validación de campos obligatorios
+        # --- NUEVA VALIDACIÓN: Comprobar si hay un dispositivo ANTES de continuar ---
+        try:
+            self.controller.fprint_context.enumerate()
+            devices = self.controller.fprint_context.get_devices()
+            if not devices:
+                self.controller.log_message("ERROR: No se detectó ningún lector de huellas conectado.")
+                messagebox.showerror("Error de Hardware", "No se encontró ningún lector de huellas. Por favor, conecte el dispositivo e intente de nuevo.")
+                return
+        except Exception as e:
+            messagebox.showerror("Error de Hardware", f"No se pudo acceder al lector de huellas: {e}")
+            return
         if not p_n or not a_p or not a_m or not rut or not hora_max:
-            self.controller.log_message("❌ ERROR: Los campos obligatorios (*) no pueden estar vacíos.")
+            self.controller.log_message("ERROR: Los campos obligatorios (*) no pueden estar vacíos.")
             messagebox.showerror("Error", "Por favor, complete todos los campos obligatorios.")
             return
             
         # 3. Validación de formato de RUT
         if not is_valid_rut(rut):
-            self.controller.log_message(f"❌ ERROR: RUT ingresado ({rut}) no es válido.")
+            self.controller.log_message(f"ERROR: RUT ingresado ({rut}) no es válido.")
             messagebox.showerror("Error", "El RUT ingresado no es válido. Revise el formato y dígito verificador.")
             return
             
@@ -694,23 +800,34 @@ class EnrollmentFrame(BaseFrame):
             datetime.strptime(hora_max, '%H:%M')
             hora_max = hora_max + ":00" # Se completa a formato H:M:S para la DB
         except ValueError:
-            self.controller.log_message(f"❌ ERROR: El formato de hora '{hora_max}' es inválido (debe ser HH:MM).")
+            self.controller.log_message(f"ERROR: El formato de hora '{hora_max}' es inválido (debe ser HH:MM).")
             messagebox.showerror("Error de Validación", "El formato de hora máxima de tardanza debe ser HH:MM (ej: 08:15).")
             return
-            
+
+        # Validar el umbral de advertencia (debe ser entero >=0)
+        try:
+            max_warn_int = int(max_warn)
+            if max_warn_int < 0:
+                raise ValueError
+        except Exception:
+            self.controller.log_message(f"ERROR: Umbral de advertencia inválido: {max_warn}")
+            messagebox.showerror("Error de Validación", "El umbral de advertencia debe ser un número entero (ej: 10).")
+            return
+
         # 5. Limpieza del RUT (quitar puntos y guiones para el ID de la huella)
         rut_clean = rut.upper().replace(".", "").replace("-", "")
-        
-        # 6. Almacenar datos para pasar al frame de estado
-        alumno_data = (p_n, s_n, a_p, a_m, rut_clean, hora_max)
 
-        # 7. Limpiar los campos del formulario antes de navegar
+        # 6. Almacenar datos para pasar al frame de estado (ahora incluye max_warn_int y curso)
+        alumno_data = (p_n, s_n, a_p, a_m, rut_clean, hora_max, max_warn_int, curso)
+
+        # 7. Bloquear UI y limpiar campos antes de navegar
         self._clear_fields() 
         self._lock_all_buttons() # Bloquear botones de este frame
+        self.controller.lock_main_menu_buttons() # Bloquear botones del menú principal
         
         # 8. CAMBIO CLAVE: Navegar al nuevo frame de estado y pasar los datos.
         # EnrollmentStatusFrame se encargará de:
-        # a) Bloquear los botones principales.
+        # a) Iniciar el hilo de enrolamiento.
         # b) Iniciar el hilo de enrolamiento.
         # c) Desbloquear y redirigir a AdminFrame al finalizar.
         self.controller.show_frame(EnrollmentStatusFrame, data=alumno_data, from_frame=EnrollmentFrame)
@@ -725,11 +842,14 @@ class EnrollmentFrame(BaseFrame):
         self.rut_entry.delete(0, tk.END)
         self.hora_max_tardanza_entry.delete(0, tk.END)
         self.hora_max_tardanza_entry.insert(0, "08:15")
+        self.max_atrasos_warning_entry.delete(0, tk.END)
+        self.max_atrasos_warning_entry.insert(0, "10")  # Resetear a valor por defecto
+        self.curso_combobox.current(0) # Resetear a 1ro Medio
 
-    def _run_enrollment(self, p_n, s_n, a_p, a_m, rut_clean, hora_max):
+    def _run_enrollment(self, p_n, s_n, a_p, a_m, rut_clean, hora_max, max_warn, curso):
         """Ejecuta el enrolamiento y desbloquea los botones al finalizar."""
         try:
-            enroll_user(p_n, s_n, a_p, a_m, rut_clean, hora_max, 
+            enroll_user(p_n, s_n, a_p, a_m, rut_clean, hora_max, max_warn, curso,
                     logger=self.controller.log_message, 
                     fprint_context=self.controller.fprint_context)
         finally:
@@ -762,15 +882,243 @@ class EnrollmentFrame(BaseFrame):
         self.controller.log_message("Cancelación de enrolamiento. Volviendo al panel de administración.")
 
 # ---------------------------------------------------
+# 4.5 FRAME: MODIFICAR DATOS ALUMNO (ModifyStudentFrame)
+# ---------------------------------------------------
+class ModifyStudentFrame(BaseFrame):
+    def __init__(self, parent, controller):
+        super().__init__(parent, controller)
+
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # Frame principal
+        main_content_frame = tk.Frame(self)
+        main_content_frame.grid(row=0, column=0, sticky="")
+
+        tk.Label(main_content_frame, text="MODIFICAR DATOS DE ALUMNO", font=("Helvetica", 18, "bold")).pack(pady=20)
+
+        # --- SECCIÓN DE BÚSQUEDA ---
+        search_frame = tk.LabelFrame(main_content_frame, text="Buscar Alumno", padx=15, pady=15, font=("Helvetica", 12))
+        search_frame.pack(padx=20, pady=10, fill=tk.X)
+
+        tk.Label(search_frame, text="Ingrese RUT (sin puntos, con guion):", font=("Helvetica", 12)).pack(side=tk.LEFT, padx=5)
+        self.search_rut_entry = tk.Entry(search_frame, width=20, font=("Helvetica", 12))
+        self.search_rut_entry.pack(side=tk.LEFT, padx=5)
+        self.search_rut_entry.bind('<Return>', lambda event: self._search_student())
+
+        self.search_button = tk.Button(search_frame, text="BUSCAR", command=self._search_student,
+                                       bg="#0066AA", fg="white", font=("Helvetica", 10, "bold"))
+        self.search_button.pack(side=tk.LEFT, padx=10)
+
+        # --- SECCIÓN DE EDICIÓN ---
+        self.form_frame = tk.LabelFrame(main_content_frame, text="Datos del Alumno", padx=15, pady=15, font=("Helvetica", 12))
+        self.form_frame.pack(padx=20, pady=10)
+
+        # Campos
+        self.primer_nombre_entry = self._create_entry_field(self.form_frame, "Primer Nombre (*):", 0)
+        self.segundo_nombre_entry = self._create_entry_field(self.form_frame, "Segundo Nombre:", 1)
+        self.apellido_paterno_entry = self._create_entry_field(self.form_frame, "Apellido Paterno (*):", 2)
+        self.apellido_materno_entry = self._create_entry_field(self.form_frame, "Apellido Materno (*):", 3)
+        
+        # Hora Máxima
+        tk.Label(self.form_frame, text="Hora Máxima de Tardanza (HH:MM) (*):", font=("Helvetica", 12)).grid(row=4, column=0, padx=10, pady=10, sticky="w")
+        self.hora_max_tardanza_entry = tk.Entry(self.form_frame, width=30, font=("Helvetica", 12))
+        self.hora_max_tardanza_entry.grid(row=4, column=1, padx=10, pady=10, sticky="e")
+
+        # Umbral Warning
+        tk.Label(self.form_frame, text="Umbral Advertencia Atrasos:", font=("Helvetica", 12)).grid(row=5, column=0, padx=10, pady=10, sticky="w")
+        self.max_atrasos_warning_entry = tk.Entry(self.form_frame, width=30, font=("Helvetica", 12))
+        self.max_atrasos_warning_entry.grid(row=5, column=1, padx=10, pady=10, sticky="e")
+
+        # Curso
+        tk.Label(self.form_frame, text="Curso:", font=("Helvetica", 12)).grid(row=6, column=0, padx=10, pady=10, sticky="w")
+        self.curso_combobox = ttk.Combobox(self.form_frame, values=["1ro Medio", "2do Medio", "3ro Medio", "4to Medio"], state="readonly", font=("Helvetica", 12), width=28)
+        self.curso_combobox.grid(row=6, column=1, padx=10, pady=10, sticky="e")
+
+        self.form_frame.grid_columnconfigure(1, weight=1)
+
+        # Botones de Acción
+        button_frame = tk.Frame(main_content_frame, pady=20)
+        button_frame.pack(pady=10)
+
+        self.save_button = tk.Button(button_frame, text="GUARDAR CAMBIOS", 
+                  command=self._save_changes, 
+                  bg="#4CAF50", fg="white", font=("Helvetica", 14, "bold"), padx=20, pady=10)
+        self.save_button.pack(side=tk.LEFT, padx=10)
+
+        self.cancel_button = tk.Button(button_frame, text="Cancelar y Volver", 
+                  command=self._cancel_and_return, 
+                  font=("Helvetica", 14), padx=20, pady=10)
+        self.cancel_button.pack(side=tk.LEFT, padx=10)
+
+        # Estado inicial: formulario deshabilitado
+        self._disable_form()
+        self.current_rut_clean = None
+
+    def on_show(self, **kwargs):
+        """Resetear vista al mostrar."""
+        self.search_rut_entry.delete(0, tk.END)
+        self._clear_form()
+        self._disable_form()
+        self.search_rut_entry.focus_set()
+
+    def _create_entry_field(self, parent, label_text, row):
+        tk.Label(parent, text=label_text, font=("Helvetica", 12)).grid(row=row, column=0, padx=10, pady=10, sticky="w")
+        entry = tk.Entry(parent, width=30, font=("Helvetica", 12))
+        entry.grid(row=row, column=1, padx=10, pady=10, sticky="e")
+        return entry
+
+    def _disable_form(self):
+        for child in self.form_frame.winfo_children():
+            if isinstance(child, tk.Entry):
+                child.config(state='disabled')
+        self.curso_combobox.config(state='disabled')
+        self.save_button.config(state='disabled')
+
+    def _enable_form(self):
+        for child in self.form_frame.winfo_children():
+            if isinstance(child, tk.Entry):
+                child.config(state='normal')
+        self.curso_combobox.config(state='readonly')
+        self.save_button.config(state='normal')
+
+    def _clear_form(self):
+        self.primer_nombre_entry.config(state='normal')
+        self.primer_nombre_entry.delete(0, tk.END)
+        self.segundo_nombre_entry.config(state='normal')
+        self.segundo_nombre_entry.delete(0, tk.END)
+        self.apellido_paterno_entry.config(state='normal')
+        self.apellido_paterno_entry.delete(0, tk.END)
+        self.apellido_materno_entry.config(state='normal')
+        self.apellido_materno_entry.delete(0, tk.END)
+        self.hora_max_tardanza_entry.config(state='normal')
+        self.hora_max_tardanza_entry.delete(0, tk.END)
+        self.max_atrasos_warning_entry.config(state='normal')
+        self.max_atrasos_warning_entry.delete(0, tk.END)
+        self.curso_combobox.config(state='readonly')
+        self.curso_combobox.set('')
+        self.current_rut_clean = None
+
+    def _search_student(self):
+        rut = self.search_rut_entry.get().strip()
+        if not rut:
+            messagebox.showerror("Error", "Ingrese un RUT para buscar.")
+            return
+
+        if not is_valid_rut(rut):
+            messagebox.showerror("Error", "RUT inválido.")
+            return
+
+        rut_clean = rut.upper().replace(".", "").replace("-", "")
+        
+        # Buscar en DB
+        try:
+            conn = connect_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT primer_nombre, segundo_nombre, apellido_paterno, apellido_materno, hora_max_tardanza, max_atrasos_warning, curso
+                FROM ALUMNOS WHERE rut = ?
+            """, (rut_clean,))
+            row = cursor.fetchone()
+            conn.close()
+
+            if row:
+                self._enable_form()
+                self._clear_form() # Limpia pero deja habilitado
+                
+                pn, sn, ap, am, hmax, mwarn, curso = row
+                self.primer_nombre_entry.insert(0, pn)
+                if sn: self.segundo_nombre_entry.insert(0, sn)
+                self.apellido_paterno_entry.insert(0, ap)
+                self.apellido_materno_entry.insert(0, am)
+                self.hora_max_tardanza_entry.insert(0, hmax if hmax else "08:15:00")
+                self.max_atrasos_warning_entry.insert(0, str(mwarn) if mwarn is not None else "10")
+                if curso: self.curso_combobox.set(curso)
+                
+                self.current_rut_clean = rut_clean
+                self.controller.log_message(f"Alumno encontrado: {pn} {ap}")
+            else:
+                self.controller.log_message(f"No se encontró alumno con RUT {rut}")
+                
+                # Fix: Limpiar y LUEGO deshabilitar para asegurar que queden bloqueados
+                self._clear_form()
+                self._disable_form()
+                
+                # Prompt para enrolar nuevo
+                response = messagebox.askyesno(
+                    "Alumno no registrado", 
+                    "El alumno no está registrado.\n¿Desea registrar un nuevo usuario?"
+                )
+                if response: # Si es True (Sí)
+                    self.controller.show_frame(EnrollmentFrame)
+
+        except Exception as e:
+            self.controller.log_message(f"Error al buscar alumno: {e}")
+            messagebox.showerror("Error", f"Error de base de datos: {e}")
+
+    def _save_changes(self):
+        if not self.current_rut_clean:
+            return
+
+        pn = self.primer_nombre_entry.get().strip()
+        sn = self.segundo_nombre_entry.get().strip()
+        ap = self.apellido_paterno_entry.get().strip()
+        am = self.apellido_materno_entry.get().strip()
+        hmax = self.hora_max_tardanza_entry.get().strip()
+        mwarn = self.max_atrasos_warning_entry.get().strip()
+        curso = self.curso_combobox.get().strip()
+
+        if not pn or not ap or not am or not hmax:
+             messagebox.showerror("Error", "Complete los campos obligatorios (*).")
+             return
+
+        # Validar hora
+        try:
+            # Si el usuario pone HH:MM, agregar :00
+            if len(hmax.split(':')) == 2:
+                hmax += ":00"
+            datetime.strptime(hmax, '%H:%M:%S')
+        except ValueError:
+            messagebox.showerror("Error", "Formato de hora inválido (use HH:MM).")
+            return
+
+        # Validar warning
+        try:
+            mwarn_int = int(mwarn)
+            if mwarn_int < 0: raise ValueError
+        except:
+            messagebox.showerror("Error", "El umbral debe ser un número entero positivo.")
+            return
+
+        if update_alumno_details(self.current_rut_clean, pn, sn, ap, am, hmax, mwarn_int, curso):
+            self.controller.log_message(f"Datos actualizados para RUT {self.current_rut_clean}")
+            messagebox.showinfo("Éxito", "Datos del alumno actualizados correctamente.")
+            self._cancel_and_return()
+        else:
+            messagebox.showerror("Error", "No se pudo actualizar la base de datos.")
+
+    def _cancel_and_return(self):
+        self._clear_form()
+        self._disable_form()
+        self.controller.show_frame(AdminFrame)
+
+# ---------------------------------------------------
 # 5. FRAME: PAD NUMÉRICO PARA INGRESO DE RUT
 # ---------------------------------------------------
 class NumericPadFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
         
+        self.grid_rowconfigure(0, weight=1)
+        self.grid_columnconfigure(0, weight=1)
+
+        # Usar ScrolledFrame para asegurar que todo el contenido sea visible
+        scrolled_frame = ScrolledFrame(self)
+        scrolled_frame.pack(fill="both", expand=True)
+
         # Frame principal centrado
-        main_frame = tk.Frame(self, padx=50, pady=50)
-        main_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        main_frame = tk.Frame(scrolled_frame.interior, padx=50, pady=50)
+        main_frame.pack(expand=True, pady=20)
         
         tk.Label(main_frame, text="INGRESE SU RUT", font=("Helvetica", 24, "bold")).pack(pady=20)
         tk.Label(main_frame, text="(sin puntos, con guión)", font=("Helvetica", 14)).pack(pady=5)
@@ -858,18 +1206,12 @@ class NumericPadFrame(BaseFrame):
             messagebox.showerror("Error", "El RUT ingresado no está registrado en el sistema.")
             return
         
-        # Bloquear botones del menú principal
-        self.controller.lock_main_menu_buttons()
-        
         # Limpiar display y volver al menú
         self._clear_display()
-        self.controller.show_frame(MainMenuFrame)
-        
-        # Iniciar verificación 1:1
+
+        # Navegar al frame de estado de verificación
         self.controller.log_message(f"Iniciando verificación 1:1 para RUT: {rut_clean}...")
-        thread = threading.Thread(target=self._run_verification, args=(rut_clean,))
-        thread.daemon = True
-        thread.start()
+        self.controller.show_frame(VerificationStatusFrame, rut=rut_clean)
     
     def _verify_rut_exists(self, rut_clean):
         """Verifica si el RUT existe en la base de datos."""
@@ -884,25 +1226,6 @@ class NumericPadFrame(BaseFrame):
             self.controller.log_message(f"Error al verificar RUT en DB: {e}")
             return False
     
-    def _run_verification(self, rut_clean):
-        """Ejecuta la verificación 1:1 de huella."""
-        try:
-            # Usar identify_user_automatically con el parámetro rut_to_verify
-            identified_rut = identify_user_automatically(self.controller.fprint_context, rut_to_verify=rut_clean)
-            
-            if identified_rut:
-                self.controller.log_message(f"Verificación 1:1 Exitosa para RUT: {rut_clean}. Ticket impreso.")
-                self.controller.show_timed_messagebox("Éxito", "¡Bienvenido(a)! Asistencia registrada.", duration=3000)
-            else:
-                self.controller.log_message(f"Verificación 1:1 Fallida para RUT: {rut_clean}. Huella no coincide.")
-                messagebox.showerror("Error", "La huella no coincide con el RUT ingresado.")
-        except Exception as e:
-            self.controller.log_message(f"Error durante verificación 1:1: {e}")
-            messagebox.showerror("Error", f"Error durante la verificación: {e}")
-        finally:
-            # Desbloquear botones del menú principal
-            self.controller.after(100, self.controller.unlock_main_menu_buttons)
-    
     def _cancel(self):
         """Cancela y vuelve al menú principal."""
         self._clear_display()
@@ -915,15 +1238,19 @@ class AdminFrame(BaseFrame):
     def __init__(self, parent, controller):
         super().__init__(parent, controller)
 
-        # Frame principal que contendrá el formulario
-        main_content_frame = tk.Frame(self)
-        main_content_frame.place(relx=0.5, rely=0.5, anchor=tk.CENTER)
+        # Utilizar ScrolledFrame para hacer que todo el contenido sea desplazable
+        scrolled_frame = ScrolledFrame(self)
+        scrolled_frame.pack(fill=tk.BOTH, expand=True)
+
+        # El contenido va dentro de 'interior'. Usamos un frame central para mantener el diseño.
+        main_content_frame = tk.Frame(scrolled_frame.interior)
+        main_content_frame.pack(expand=True, padx=20, pady=20)
 
         tk.Label(main_content_frame, text="PANEL DE ADMINISTRACIÓN", font=("Helvetica", 16, "bold")).pack(pady=20)
         
         # --- SECCIÓN EXPORTAR EXCEL ---
         export_frame = tk.LabelFrame(main_content_frame, text="Exportar Registros de Asistencia (Excel)", padx=10, pady=10, font=("Helvetica", 12, "bold"))
-        export_frame.pack(padx=50, pady=10, ipadx=10)
+        export_frame.pack(padx=50, pady=10, ipadx=10, fill=tk.X)
         
         # Frame para la selección de Mes/Año
         selection_frame = tk.Frame(export_frame)
@@ -962,6 +1289,15 @@ class AdminFrame(BaseFrame):
         tk.Button(users_frame, text="ENROLLAR NUEVO ALUMNO", 
                   command=lambda: controller.show_frame(EnrollmentFrame),
                   bg="#0066AA", fg="white", font=("Helvetica", 12, "bold"), height=2).pack(fill=tk.X, pady=(0, 5))
+
+        tk.Button(users_frame, text="MODIFICAR DATOS ALUMNO", 
+                  command=lambda: controller.show_frame(ModifyStudentFrame),
+                  bg="#FF9800", fg="white", font=("Helvetica", 12, "bold"), height=2).pack(fill=tk.X, pady=(0, 5))
+
+        # Botón para reiniciar atrasos (NUEVO)
+        tk.Button(users_frame, text="REINICIAR ATRASOS (TODOS)", 
+                  command=self._reset_delays_confirmation,
+                  bg="#D32F2F", fg="white", font=("Helvetica", 12, "bold"), height=2).pack(fill=tk.X, pady=(0, 5))
 
         #--- NUEVA SECCIÓN: GRÁFICOS DE ASISTENCIA ---  
         graph_frame = tk.LabelFrame(main_content_frame, text="Ver Marcaciones", padx=10, pady=10, font=("Helvetica", 12, "bold"))
@@ -1028,7 +1364,7 @@ class AdminFrame(BaseFrame):
                 self.sender_password_entry.delete(0, tk.END)
                 self.sender_password_entry.insert(0, sender_password)
         except Exception as e:
-            self.controller.log_message(f"⚠️ No se pudo cargar la configuración de email: {e}")
+            self.controller.log_message(f"No se pudo cargar la configuración de email: {e}")
     
     def _save_email_config(self):
         """Guarda la configuración de email en config.ini."""
@@ -1054,12 +1390,12 @@ class AdminFrame(BaseFrame):
             with open('config.ini', 'w') as configfile:
                 config.write(configfile)
             
-            self.controller.log_message("✅ Configuración de correo remitente guardada exitosamente.")
+            self.controller.log_message("Configuración de correo remitente guardada exitosamente.")
             messagebox.showinfo("Éxito", "La configuración de correo remitente ha sido guardada correctamente.")
             
         except Exception as e:
             error_msg = f"Error al guardar la configuración de email: {e}"
-            self.controller.log_message(f"❌ {error_msg}")
+            self.controller.log_message(f"{error_msg}")
             messagebox.showerror("Error", error_msg)
         
     def _export_and_email_thread(self):
@@ -1084,12 +1420,11 @@ class AdminFrame(BaseFrame):
 
     def _export_to_excel(self, send_email=False):
         """
-        Obtiene los datos de asistencia, los pivotea por día y exporta el resultado
-        a un archivo Excel. Si se especifica, también lo envía por correo.
-        El valor de la tabla dinámica es la HORA DE ENTRADA.
+        Obtiene los registros de asistencia para el mes/año, los ordena cronológicamente 
+        y los exporta a un archivo Excel.
         """
         if not PD_AVAILABLE:
-            self.controller.log_message("❌ Error: Pandas no está instalado. No se puede generar el Excel.")
+            self.controller.log_message("Error: Pandas no está instalado. No se puede generar el Excel.")
             messagebox.showerror("Error", "La librería 'pandas' no está instalada. No se puede generar el Excel.")
             return
 
@@ -1108,49 +1443,52 @@ class AdminFrame(BaseFrame):
             # 2. Crear un DataFrame de Pandas
             df = pd.DataFrame(results, columns=columns)
             
-            # 3. Procesar y Pivotear (Crear la planilla de asistencia)
-            
-            # Extraer el número de día
-            df['Día'] = pd.to_datetime(df['fecha'], errors='coerce').dt.day
-            
-            # Asegurar que la hora de entrada es una cadena limpia (o vacía si es NaN)
-            # ESTE ES EL CAMBIO CLAVE: Se usa la hora_entrada como Valor_Marcacion
-            df['Valor_Marcacion'] = df.get('hora_entrada', '').fillna('').astype(str)
-            
-            # Nombre completo para el índice
-            df['Nombre_Completo'] = df.get('Nombre_Completo', df.get('primer_nombre', '')).fillna('').astype(str)
-            
-            # El pivote usa la hora de entrada como valor para la tabla
-            pivot_df = df.pivot_table(
-                index=['rut', 'Nombre_Completo'],
-                columns='Día',
-                values='Valor_Marcacion', 
-                aggfunc='first'
-            ).fillna('')
+            # 3. CONSOLIDAR y CAMBIAR NOMBRES DE COLUMNAS
+            df.rename(columns={
+                'rut': 'RUT', 
+                'Nombre_Completo': 'Nombre Completo',
+                'fecha': 'Fecha', 
+                'hora_entrada': 'Hora de Entrada',
+                'estado': 'Estado de Asistencia'
+            }, inplace=True)
 
-            # 4. Exportar a Excel
-            filename = f"Reporte_Asistencia_{year}_{month:02d}.xlsx"
+            # 4. ORDENAR CRONOLÓGICAMENTE (de la más antigua a la más nueva)
+            # Primero por Fecha, luego por Hora de Entrada
+            df['Hora de Entrada'] = df['Hora de Entrada'].astype(str)
+            df['Fecha'] = pd.to_datetime(df['Fecha'])
+            
+            # La columna Fecha ya es la columna "pivote" cronológica
+            df = df.sort_values(by=['Fecha', 'Hora de Entrada'], ascending=[True, True])
+            
+            # Opcional: Reordenar las columnas para que RUT y Nombre aparezcan primero
+            df = df[['RUT', 'Nombre Completo', 'Fecha', 'Hora de Entrada', 'Estado de Asistencia']]
+            
+            # 5. Exportar a Excel
+            filename = f"Marcaciones_Detalle_{year}_{month:02d}.xlsx"
             filepath = os.path.join(os.getcwd(), filename) # Guardar en el directorio actual
             
-            # Guardar el DataFrame pivoteado
-            pivot_df.to_excel(filepath)
+            df.to_excel(filepath, index=False)
             
-            self.controller.log_message(f"✅ Reporte Excel generado: {filepath}")
+            self.controller.log_message(f"Reporte Excel generado: {filepath}")
             
             if send_email:
-                # 5. Enviar por correo si se solicita
+                # 6. Enviar por correo si se solicita
+                recipient = self.email_receiver_entry.get()
+                subject = f"Reporte Detallado de Marcaciones {month:02d}/{year}"
+                body = f"Adjunto encontrarás el reporte detallado de todas las marcaciones (fecha y hora) para el mes de {month}/{year}."
+                
                 success, msg = send_report_by_email(
-                    recipient_email=self.email_target_var.get(),
-                    subject=f"Reporte de Asistencia {month}/{year}",
-                    body=f"Adjunto encontrarás el reporte consolidado de asistencia para el mes de {month}/{year}.",
+                    recipient_email=recipient,
+                    subject=subject,
+                    body=body,
                     attachment_path=filepath
                 )
                 if success:
-                    messagebox.showinfo("Correo Enviado", f"Reporte enviado exitosamente a {self.email_target_var.get()}")
+                    messagebox.showinfo("Correo Enviado", f"Reporte enviado exitosamente a {recipient}")
                 else:
                     messagebox.showerror("Error de Correo", f"Fallo al enviar el correo: {msg}")
             else:
-                messagebox.showinfo("Exportado", f"Excel generado: {filepath}")
+                messagebox.showinfo("Exportado", f"Excel de marcaciones detallado generado: {filepath}")
 
         except Exception as e:
             self.controller.log_message(f"Error durante la exportación a Excel: {e}")
@@ -1248,7 +1586,7 @@ class AdminFrame(BaseFrame):
             for row in sorted_results:
                 row_list = list(row)
                 es_atraso = ''
-                if idx_estado is not None and row[idx_estado] and 'atraso' in str(row[idx_estado]).lower():
+                if idx_estado is not None and row[idx_estado] and str(row[idx_estado]).lower() in ['atraso', 'tardanza']:
                     es_atraso = '✓'
                     total_atrasos += 1
                 
@@ -1294,6 +1632,7 @@ class AdminFrame(BaseFrame):
             vsb.grid(row=0, column=1, sticky='ns')
             hsb.grid(row=1, column=0, sticky='ew')
 
+
             frame.grid_rowconfigure(0, weight=1)
             frame.grid_columnconfigure(0, weight=1)
 
@@ -1330,17 +1669,28 @@ class AdminFrame(BaseFrame):
                         # Agregar estadísticas al final
                         writer.writerow([])
                         writer.writerow(['TOTAL ATRASOS', total_atrasos])
-                    self.controller.log_message(f"✅ Exportación CSV exitosa: {fp}")
+                    self.controller.log_message(f"Exportación CSV exitosa: {fp}")
                     messagebox.showinfo("Exportado", f"CSV generado: {fp}")
                 except Exception as e:
-                    self.controller.log_message(f"❌ Error exportando CSV: {e}")
+                    self.controller.log_message(f"Error exportando CSV: {e}")
                     messagebox.showerror("Error", f"No se pudo exportar: {e}")
 
             ttk.Button(btn_frame, text="Exportar CSV", command=_export_csv).pack(side=tk.RIGHT, padx=8)
 
         except Exception as e:
-            self.controller.log_message(f"❌ Error al mostrar marcaciones en tabla: {e}")
+            self.controller.log_message(f"Error al mostrar marcaciones en tabla: {e}")
             messagebox.showerror("Error", f"Ocurrió un error al mostrar las marcaciones: {e}")
+
+    def _reset_delays_confirmation(self):
+        """Muestra diálogo de confirmación y resetea los atrasos si se confirma."""
+        if messagebox.askyesno("Confirmar Reset", 
+                               "¿Está seguro de que desea reiniciar los atrasos de TODOS los alumnos a 0?\n\nEsta acción no se puede deshacer."):
+            if reset_all_delays():
+                self.controller.log_message("Se han reseteado los atrasos de todos los alumnos.")
+                messagebox.showinfo("Éxito", "Los contadores de atrasos han sido reiniciados a 0.")
+            else:
+                self.controller.log_message("Error al intentar resetear atrasos.")
+                messagebox.showerror("Error", "Ocurrió un error al intentar reiniciar los atrasos. Revise el log.")
 
 # ----------------------------------------------------
 # 7. FRAME: ESTADO DE ENROLAMIENTO (EnrollmentStatusFrame)
@@ -1364,15 +1714,11 @@ class EnrollmentStatusFrame(BaseFrame):
                                      bg="#F44336", fg="white", font=("Helvetica", 12, "bold"), state=tk.DISABLED)
         self.back_button.pack(pady=50, ipadx=20, ipady=10)
         
-    def show_frame(self, data, from_frame):
+    def on_show(self, data, from_frame):
         """Prepara e inicia el proceso al mostrar la ventana."""
-        super().show_frame()
         self.alumno_data = data
         self.status_label.config(text="Coloque el dedo en el lector cuando se le solicite.")
         self.back_button.config(state=tk.DISABLED)
-        
-        # 1. Bloquear los botones principales
-        self.controller.lock_main_menu_buttons()
         
         # 2. Iniciar el hilo de enrolamiento
         threading.Thread(target=self._run_enrollment_thread, daemon=True).start()
@@ -1387,22 +1733,35 @@ class EnrollmentStatusFrame(BaseFrame):
         """Ejecuta la función de enrolamiento en el hilo secundario."""
         try:
             # Desempaquetar los datos del alumno
-            p_n, s_n, a_p, a_m, rut_clean, hora_max = self.alumno_data
+            p_n, s_n, a_p, a_m, rut_clean, hora_max, max_warn, curso = self.alumno_data
             
             # Llamar a la función de enrolamiento con el lock y el logger
-            enroll_user(
-                p_n, s_n, a_p, a_m, rut_clean, hora_max, 
+            success, message = enroll_user(
+                p_n, s_n, a_p, a_m, rut_clean, hora_max, max_warn, curso,
                 logger=self._update_log_message, # Usar el logger de este frame
                 fprint_context=self.controller.fprint_context,
                 lock=self.controller.fprint_lock # Pasar el lock
             )
             
-            # Si tiene éxito, el hilo llama a la finalización
-            self.controller.after(100, lambda: self._finish_process("✅ Enrolamiento completado."))
+            if success:
+                # Si tiene éxito, el hilo llama a la finalización
+                self.controller.after(100, lambda: self._finish_process(f"{message}"))
+            else:
+                # Si falla, mostrar error y permitir volver
+                self.controller.after(100, lambda: self._handle_enrollment_error(message))
 
         except Exception as e:
-            # Si hay una excepción, notificar y finalizar
-            self.controller.after(100, lambda: self._finish_process(f"❌ Error durante el enrolamiento: {e}"))
+            # Si hay una excepción no controlada
+            self.controller.after(100, lambda: self._handle_enrollment_error(f"Error crítico: {e}"))
+            
+    def _handle_enrollment_error(self, error_message):
+        """Maneja el error de enrolamiento en la GUI."""
+        self._update_log_message(f"{error_message}")
+        self.status_label.config(text=f"Error: {error_message}\nIntente nuevamente.")
+        
+        # Habilitar botón de volver para que el usuario pueda reintentar
+        self.back_button.config(state=tk.NORMAL)
+        self.controller.unlock_main_menu_buttons()
             
     def _finish_process(self, final_message):
         """Finaliza el proceso y redirige a AdminFrame."""
@@ -1416,12 +1775,95 @@ class EnrollmentStatusFrame(BaseFrame):
         self.controller.log_message(f"Proceso finalizado. Volviendo a Administración.")
 
     def _cancel_process(self):
-        """Cancelación no disponible, ya que el proceso de FPrint es sincrónico."""
-        self._update_log_message("El enrolamiento está en curso. Por favor, espere a que termine o reinicie la aplicación.")
-        self.controller.after(3000, lambda: self.back_button.config(state=tk.DISABLED))   
+        """Permite al usuario volver al panel de administración después de un error."""
+        self.controller.log_message("Cancelando y volviendo al panel de administración.")
+        # Asegurarse de que los botones principales estén desbloqueados
+        self.controller.unlock_main_menu_buttons()
+        # Redirigir al panel de administración
+        self.controller.show_frame(AdminFrame)
+
 
 # ----------------------------------------------------
-# 8. INICIO DE LA APLICACIÓN
+# 8. FRAME: ESTADO DE VERIFICACIÓN (VerificationStatusFrame)
+# ----------------------------------------------------
+class VerificationStatusFrame(BaseFrame):
+    """Muestra el estado de la verificación 1:1 de huella."""
+    def __init__(self, parent, controller):
+        super().__init__(parent, controller)
+        self.rut_to_verify = None
+
+        tk.Label(self, text="VERIFICACIÓN DE ASISTENCIA", font=("Helvetica", 20, "bold"), fg="#4CAF50").pack(pady=(50, 20))
+        
+        self.status_label = tk.Label(self, text="Iniciando...", font=("Helvetica", 14), fg="black")
+        self.status_label.pack(pady=10)
+
+        self.back_button = tk.Button(self, text="Cancelar", command=self._cancel_process, 
+                                     bg="#F44336", fg="white", font=("Helvetica", 12, "bold"))
+        self.back_button.pack(pady=50, ipadx=20, ipady=10)
+
+    def on_show(self, rut):
+        """Prepara e inicia el proceso de verificación."""
+        self.rut_to_verify = rut
+        self.status_label.config(text=f"Verificando para RUT: {rut}\nColoque el dedo en el lector.")
+        self.back_button.config(state=tk.NORMAL)
+        
+        # Bloquear botones del menú principal
+        self.controller.lock_main_menu_buttons()
+        
+        # Iniciar el hilo de verificación
+        threading.Thread(target=self._run_verification_thread, daemon=True).start()
+
+    def _update_status_message(self, message):
+        """Actualiza el mensaje de estado en la GUI."""
+        self.controller.after(0, lambda: self.status_label.config(text=message))
+        self.controller.after(0, lambda: self.controller.log_message(message))
+
+    def _run_verification_thread(self):
+        """Ejecuta la lógica de verificación en un hilo secundario."""
+        try:
+            self._update_status_message("Por favor, coloque su dedo en el lector...")
+            
+            identified_rut = identify_user_automatically(
+                self.controller.fprint_context, 
+                rut_to_verify=self.rut_to_verify,
+                lock=self.controller.fprint_lock
+            )
+            
+            if identified_rut:
+                msg = f"¡Bienvenido(a)! Asistencia registrada para {identified_rut}."
+                self._update_status_message(msg)
+                self.controller.show_timed_messagebox("Éxito", msg, duration=3000)
+                self.controller.after(3000, self._finish_process) # Solo en caso de éxito, volver al menú
+            else:
+                msg = "La huella no coincide con el RUT ingresado."
+                self._update_status_message(f"{msg}")
+                # Mostrar el error y luego volver al pad numérico
+                self.controller.after(2000, self._return_to_rut_pad)
+
+        except Exception as e:
+            error_msg = f"Error durante la verificación: {e}"
+            self._update_status_message(f"{error_msg}")
+            # En caso de error, también volver al pad numérico
+            self.controller.after(2000, self._return_to_rut_pad)
+
+    def _finish_process(self):
+        """Desbloquea botones y vuelve al menú principal."""
+        self.controller.unlock_main_menu_buttons()
+        self.controller.show_frame(MainMenuFrame)
+
+    def _cancel_process(self):
+        """Cancela el proceso y vuelve al menú principal."""
+        self._finish_process()
+
+    def _return_to_rut_pad(self):
+        """Desbloquea botones y vuelve al pad numérico."""
+        self.controller.unlock_main_menu_buttons()
+        self.controller.show_frame(NumericPadFrame)
+    
+
+
+# ----------------------------------------------------
+# 9. INICIO DE LA APLICACIÓN
 # ----------------------------------------------------
 
 if __name__ == "__main__":

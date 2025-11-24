@@ -105,13 +105,15 @@ def identify_user_automatically(fprint_context, rut_to_verify=None, lock=None):
                 full_name = get_alumno_full_name(identified_rut) 
                 
                 # 4. Lógica de MARCACIÓN (Almacenar en la BD)
-                estado, hora, num_atrasos = save_clocking(identified_rut)
+                estado, hora, num_atrasos, max_atrasos_warning = save_clocking(
+                    identified_rut
+                )
                 print(f"Marcación de asistencia registrada en la base de datos. Estado: {estado}, Atrasos: {num_atrasos}")
                 
                 # ELIMINADO: Ya no es necesario el time.sleep(1)
 
                 # 5. Lógica de IMPRESIÓN (Pasando el nombre completo y los atrasos)
-                if print_clocking_receipt(full_name, num_atrasos): 
+                if print_clocking_receipt(full_name, num_atrasos, max_atrasos_warning):
                     print(f"Ticket de marcación impreso para {full_name}.")
                 else:
                     print("No se pudo imprimir el ticket. Revisar la configuración de la impresora.")

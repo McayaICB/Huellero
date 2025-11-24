@@ -15,8 +15,8 @@ except (configparser.NoSectionError, configparser.NoOptionError, ValueError):
     VENDOR_ID = 0x04b8  # Valor por defecto para Epson
     PRODUCT_ID = 0x0e15 # Valor por defecto para TM-T20II
 
-def print_clocking_receipt(username, num_atrasos):
-    """Imprime un ticket de marcación de tiempo, incluyendo el número de atrasos."""
+def print_clocking_receipt(username, num_atrasos, max_atrasos_warning):
+    """Imprime un ticket de marcación de tiempo, incluyendo el número de atrasos y advertencia."""
     now = datetime.now()
     p = None  # Inicializamos la variable de la impresora
     try:
@@ -36,7 +36,14 @@ def print_clocking_receipt(username, num_atrasos):
         p.text(f"HORA:    {now.strftime('%H:%M:%S')}\n")
 
         # Nueva sección para el contador de atrasos
-        p.text(f"ATRASOS ESTE MES: {num_atrasos}\n")
+        p.text(f"ATRASOS ACUMULADOS: {num_atrasos}\n")
+        
+        # LÓGICA DE ADVERTENCIA: Usar el nuevo parámetro
+        if num_atrasos >= max_atrasos_warning:
+            p.set(align='center', bold=True)
+            p.text("\n*** ADVERTENCIA: LIMITE ALCANZADO ***\n")
+            p.set(align='left', bold=False)
+            
         p.text("\n")
 
         p.text("¡Marcación Exitosa!\n")
