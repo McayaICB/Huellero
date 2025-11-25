@@ -1,0 +1,9 @@
+pandas
+openpyxl
+matplotlib
+python-escpos==3.1
+pyusb
+pyserial
+qrcode
+Pillow
+pycups
